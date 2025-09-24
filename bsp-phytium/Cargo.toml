@@ -1,0 +1,9 @@
+[package]
+name = "bsp-phytium"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.21"
+rdrive = { workspace = true }
+phytium-mci = { git = "https://github.com/YanQD/phytium-mci.git", rev = "d4657ae", default-features = false, features = ["pio", "poll"] }

@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "bsp-phytium",
+    "bsp-rockship",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later OR Apache-2.0 OR MulanPSL-2.0"
+
+[profile.release]
+lto = true
+
+[workspace.dependencies]
+log = "0.4"
+rdrive = "0.16"
