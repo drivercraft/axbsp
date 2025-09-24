@@ -1,53 +1,36 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::format;
+use alloc::sync::Arc;
 use log::info;
-use rdrive::{DriverGeneric, driver::block::*};
-use rdrive::get_one;
+
+use rdif_block::{IQueue, Interface};
+use rdif_clk::Interface as _;
+use rdrive::{get_one, DriverGeneric, KError};
 
 use sdmmc::BLOCK_SIZE;
 use sdmmc::emmc::clock::{Clk, ClkError, init_global_clk};
 use sdmmc::err::SdError;
 
-pub use sdmmc::emmc::EMmcHost;
-pub use sdmmc::{Kernel, set_impl};
+pub use sdmmc::{emmc::EMmcHost, set_impl, Kernel};
+
+use spin::Mutex;
+
+use crate::clk::ClkDriver;
 
 const OFFSET: usize = 0x7_A000;
 
-/// Maps `SdError` values from the lower-level driver to generic `DevError`s.
-fn deal_emmc_err(err: SdError) -> io::Error {
-    let kind = match err {
-        SdError::Timeout | SdError::DataTimeout => io::ErrorKind::TimedOut,
-
-        SdError::InvalidResponse | SdError::InvalidResponseType => {
-            io::ErrorKind::InvalidParameter { name: "response" }
-        }
-        SdError::UnsupportedCard => io::ErrorKind::InvalidParameter { name: "card" },
-
-        SdError::TuningFailed | SdError::VoltageSwitchFailed => io::ErrorKind::InvalidParameter {
-            name: "configuration",
-        },
-        SdError::BadMessage | SdError::InvalidArgument => {
-            io::ErrorKind::InvalidParameter { name: "parameter" }
-        }
-        SdError::BusWidth => io::ErrorKind::InvalidParameter { name: "bus_width" },
-        SdError::CardError(_, _) => io::ErrorKind::InvalidParameter { name: "card_error" },
-        _ => io::ErrorKind::Other(format!("{err}").into()),
-    };
-    io::Error {
-        kind,
-        success_pos: 0,
-    }
-}
-
 /// Driver for the RK3568 eMMC controller.
-pub struct EmmcDriver(pub EMmcHost);
+/// Driver for the RK3568 eMMC controller.
+pub struct EmmcDriver {
+    pub host: Arc<Mutex<EMmcHost>>,
+}
 
 impl EmmcDriver {
     /// Creates a new `EmmcDriver` instance.
-    pub fn new(base_addr: usize) -> Self {
-        EmmcDriver(EMmcHost::new(base_addr))
+    pub fn new(emmc_host: EMmcHost) -> Self {
+        let host = Arc::new(Mutex::new(emmc_host));
+        EmmcDriver { host }
     }
 }
 
@@ -62,69 +45,187 @@ impl DriverGeneric for EmmcDriver {
 }
 
 impl Interface for EmmcDriver {
-    /// Reads a single block from the eMMC device into the provided buffer.
-    fn read_block(&mut self, block_id: usize, buf: &mut [u8]) -> Result<(), io::Error> {
-        let block_id = block_id + OFFSET;
-        if buf.len() < BLOCK_SIZE {
-            return Err(io::Error {
-                kind: io::ErrorKind::InvalidParameter { name: "buffer" },
-                success_pos: 0,
-            });
-        }
-
-        let (prefix, _, suffix) = unsafe { buf.align_to_mut::<u32>() };
-        if !prefix.is_empty() || !suffix.is_empty() {
-            return Err(io::Error {
-                kind: io::ErrorKind::InvalidParameter { name: "buffer" },
-                success_pos: 0,
-            });
-        }
-
-        self.0
-            .read_blocks(block_id as u32, 1, buf)
-            .map_err(deal_emmc_err)
+    fn create_queue(&mut self) -> Option<alloc::boxed::Box<dyn rdif_block::IQueue>> {
+        // 创建新的队列结构体实例
+        Some(alloc::boxed::Box::new(EmmcQueue {
+            host: Arc::clone(&self.host),
+        }))
     }
 
-    /// Writes a single block to the eMMC device from the given buffer.
-    fn write_block(&mut self, block_id: usize, buf: &[u8]) -> Result<(), io::Error> {
-        let block_id = block_id + OFFSET;
-        if buf.len() < BLOCK_SIZE {
-            return Err(io::Error {
-                kind: io::ErrorKind::InvalidParameter { name: "buffer" },
-                success_pos: 0,
-            });
-        }
-
-        let (prefix, _, suffix) = unsafe { buf.align_to::<u32>() };
-        if !prefix.is_empty() || !suffix.is_empty() {
-            return Err(io::Error {
-                kind: io::ErrorKind::InvalidParameter { name: "buffer" },
-                success_pos: 0,
-            });
-        }
-
-        self.0
-            .write_blocks(block_id as u32, 1, buf)
-            .map_err(deal_emmc_err)
+    fn enable_irq(&mut self) {
+        todo!()
     }
 
-    /// Flushes any cached writes (no-op for now).
-    fn flush(&mut self) -> Result<(), io::Error> {
-        Ok(())
+    fn disable_irq(&mut self) {
+        todo!()
     }
 
+    fn is_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn handle_irq(&mut self) -> rdif_block::Event {
+        rdif_block::Event::none()
+    }
+}
+
+/// 专门用于处理I/O队列操作的结构体
+pub struct EmmcQueue {
+    host: Arc<Mutex<EMmcHost>>,
+}
+
+impl IQueue for EmmcQueue {
     /// Returns the total number of blocks available on the device.
-    #[inline]
     fn num_blocks(&self) -> usize {
-        self.0.get_block_num() as _
+        self.host.lock().get_block_num() as _
     }
 
     /// Returns the block size in bytes.
-    #[inline]
     fn block_size(&self) -> usize {
-        self.0.get_block_size()
+        self.host.lock().get_block_size()
+    }
+
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn buff_config(&self) -> rdif_block::BuffConfig {
+        rdif_block::BuffConfig {
+            dma_mask: u64::MAX,
+            align: 0x1000,
+            size: self.block_size(),
+        }
+    }
+
+    fn submit_request(
+        &mut self,
+        request: rdif_block::Request<'_>,
+    ) -> Result<rdif_block::RequestId, rdif_block::BlkError> {
+        let id = request.block_id + OFFSET;
+        
+        match request.kind {
+            rdif_block::RequestKind::Read(mut buffer) => {
+                if buffer.len() < BLOCK_SIZE {
+                    return Err(rdif_block::BlkError::Other(Box::new(
+                        BufferError::InvalidSize {
+                            expected: BLOCK_SIZE,
+                            actual: buffer.len(),
+                        }
+                    )));
+                }
+
+                let (prefix, _, suffix) = unsafe { buffer.align_to_mut::<u32>() };
+                if !prefix.is_empty() || !suffix.is_empty() {
+                    return Err(rdif_block::BlkError::Other(Box::new(
+                        BufferError::InvalidAlignment
+                    )));
+                }
+
+                self.host.lock()
+                    .read_blocks(id as u32, 1, &mut buffer)
+                    .map_err(|err| map_sd_error_to_blk_error(err))?;
+                
+                Ok(rdif_block::RequestId::new(0))
+            }
+            rdif_block::RequestKind::Write(buffer) => {
+                if buffer.len() < BLOCK_SIZE {
+                    return Err(rdif_block::BlkError::Other(Box::new(
+                        BufferError::InvalidSize {
+                            expected: BLOCK_SIZE,
+                            actual: buffer.len(),
+                        }
+                    )));
+                }
+
+                let (prefix, _, suffix) = unsafe { buffer.align_to::<u32>() };
+                if !prefix.is_empty() || !suffix.is_empty() {
+                    return Err(rdif_block::BlkError::Other(Box::new(
+                        BufferError::InvalidAlignment
+                    )));
+                }
+
+                // 修复：使用正确的 self.host.lock() 而不是 self.0
+                self.host.lock()
+                    .write_blocks(id as u32, 1, buffer)
+                    .map_err(|err| map_sd_error_to_blk_error(err))?;
+                
+                Ok(rdif_block::RequestId::new(0))
+            }
+        }
+    }
+
+    fn poll_request(
+        &mut self,
+        _request: rdif_block::RequestId,
+    ) -> Result<(), rdif_block::BlkError> {
+        Ok(())
     }
 }
+
+// impl Interface for EmmcDriver {
+//     /// Reads a single block from the eMMC device into the provided buffer.
+//     fn read_block(&mut self, block_id: usize, buf: &mut [u8]) -> Result<(), io::Error> {
+//         let block_id = block_id + OFFSET;
+//         if buf.len() < BLOCK_SIZE {
+//             return Err(io::Error {
+//                 kind: io::ErrorKind::InvalidParameter { name: "buffer" },
+//                 success_pos: 0,
+//             });
+//         }
+
+//         let (prefix, _, suffix) = unsafe { buf.align_to_mut::<u32>() };
+//         if !prefix.is_empty() || !suffix.is_empty() {
+//             return Err(io::Error {
+//                 kind: io::ErrorKind::InvalidParameter { name: "buffer" },
+//                 success_pos: 0,
+//             });
+//         }
+
+//         self.0
+//             .read_blocks(block_id as u32, 1, buf)
+//             .map_err(deal_emmc_err)
+//     }
+
+//     /// Writes a single block to the eMMC device from the given buffer.
+//     fn write_block(&mut self, block_id: usize, buf: &[u8]) -> Result<(), io::Error> {
+//         let block_id = block_id + OFFSET;
+//         if buf.len() < BLOCK_SIZE {
+//             return Err(io::Error {
+//                 kind: io::ErrorKind::InvalidParameter { name: "buffer" },
+//                 success_pos: 0,
+//             });
+//         }
+
+//         let (prefix, _, suffix) = unsafe { buf.align_to::<u32>() };
+//         if !prefix.is_empty() || !suffix.is_empty() {
+//             return Err(io::Error {
+//                 kind: io::ErrorKind::InvalidParameter { name: "buffer" },
+//                 success_pos: 0,
+//             });
+//         }
+
+//         self.0
+//             .write_blocks(block_id as u32, 1, buf)
+//             .map_err(deal_emmc_err)
+//     }
+
+//     /// Flushes any cached writes (no-op for now).
+//     fn flush(&mut self) -> Result<(), io::Error> {
+//         Ok(())
+//     }
+
+//     /// Returns the total number of blocks available on the device.
+//     #[inline]
+//     fn num_blocks(&self) -> usize {
+//         self.0.get_block_num() as _
+//     }
+
+//     /// Returns the block size in bytes.
+//     #[inline]
+//     fn block_size(&self) -> usize {
+//         self.0.get_block_size()
+//     }
+// }
 
 pub struct EmmcClk {
     pub core_clk_index: usize,
@@ -138,7 +239,7 @@ impl EmmcClk {
 
 impl Clk for EmmcClk {
     fn emmc_get_clk(&self) -> Result<u64, ClkError> {
-        let clk_device = get_one::<rdrive::driver::Clk>().unwrap();
+        let clk_device = get_one::<ClkDriver>().unwrap();
 
         info!(
             "Getting eMMC clock rate using core_clk_index: {}",
@@ -154,7 +255,7 @@ impl Clk for EmmcClk {
     }
 
     fn emmc_set_clk(&self, rate: u64) -> Result<u64, ClkError> {
-        let clk_device = get_one::<rdrive::driver::Clk>().unwrap();
+        let clk_device = get_one::<ClkDriver>().unwrap();
 
         info!(
             "Getting eMMC clock rate using core_clk_index: {}",
@@ -175,4 +276,49 @@ pub fn init_clk(core_clk_index: usize) -> Result<(), ClkError> {
     let static_clk: &'static dyn Clk = Box::leak(Box::new(emmc_clk));
     init_global_clk(static_clk);
     Ok(())
+}
+
+#[derive(Debug)]
+enum BufferError {
+    InvalidSize { expected: usize, actual: usize },
+    InvalidAlignment,
+}
+
+impl core::fmt::Display for BufferError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BufferError::InvalidSize { expected, actual } => {
+                write!(f, "Invalid buffer size: expected at least {}, got {}", expected, actual)
+            }
+            BufferError::InvalidAlignment => {
+                write!(f, "Buffer is not properly aligned for u32 access")
+            }
+        }
+    }
+}
+
+impl core::error::Error for BufferError {}
+#[derive(Debug)]
+struct SdErrorWrapper(SdError);
+
+impl core::fmt::Display for SdErrorWrapper {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SD/eMMC Error: {:?}", self.0)
+    }
+}
+
+impl core::error::Error for SdErrorWrapper {}
+
+// 错误映射函数
+fn map_sd_error_to_blk_error(err: SdError) -> rdif_block::BlkError {
+    match err {
+        // 超时错误通常需要重试
+        SdError::Timeout | SdError::DataTimeout => rdif_block::BlkError::Retry,
+        
+        // 不支持的卡类型
+        SdError::UnsupportedCard => rdif_block::BlkError::NotSupported,
+        
+        // 其他错误包装为Other，使用自定义包装器
+        _ => rdif_block::BlkError::Other(Box::new(SdErrorWrapper(err))),
+    }
 }

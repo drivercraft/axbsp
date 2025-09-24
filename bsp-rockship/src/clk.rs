@@ -1,6 +1,7 @@
 extern crate alloc;
 
-use rdrive::{DriverGeneric, driver::clk::*};
+use rdif_clk::{ClockId, Interface};
+use rdrive::{DriverGeneric, KError};
 use rk3568_clk::CRU;
 use rk3568_clk::cru_clksel_con28_bits::*;
 
