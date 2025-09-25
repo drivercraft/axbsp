@@ -8,7 +8,7 @@ log = "0.4.21"
 rdrive = { workspace = true }
 rdif-block = { workspace = true }
 spin = { workspace = true }
-phytium-mci = { git = "https://github.com/YanQD/phytium-mci.git", rev = "d4657ae", default-features = false, features = ["pio", "poll"] }
+phytium-mci = { git = "https://github.com/YanQD/phytium-mci.git", rev = "99c9ee5", default-features = false, features = ["pio"]}
 axplat-aarch64-dyn = { workspace = true }
 axklib = { workspace = true }
 

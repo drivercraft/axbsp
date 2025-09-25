@@ -3,16 +3,13 @@ extern crate alloc;
 use axklib::{mem::iomap, time::busy_wait};
 
 use core::{
-    cmp,
-    marker::{Send, Sync},
-    ptr::NonNull,
-    time::Duration,
+    cmp, marker::{Send, Sync}, ptr::NonNull, time::Duration
 };
 
 use log::{debug, info};
 use rdrive::{PlatformDevice, module_driver, probe::OnProbeError, register::FdtInfo};
 
-use phytium_mci::mci_host::err::MCIHostError;
+use phytium_mci::{mci_host::err::MCIHostError, IoPad, PAD_ADDRESS};
 use phytium_mci::sd::SdCard;
 pub use phytium_mci::{Kernel, set_impl};
 
@@ -75,14 +72,21 @@ fn probe_sdcard(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnPro
     )
     .expect("Failed to iomap mci reg");
 
+    let iopad_reg_base = iomap((PAD_ADDRESS as usize).into(), 0x2000).expect("Failed to iomap iopad reg");
+
     info!("MCI reg base mapped at {:#x}", mci_reg_base.as_usize());
 
     let mci_reg =
         NonNull::new(mci_reg_base.as_usize() as *mut u8).expect("Failed to create NonNull pointer");
 
+    let iopad_reg =
+        NonNull::new(iopad_reg_base.as_usize() as *mut u8).expect("Failed to create NonNull pointer for iopad");
+
+    let iopad = IoPad::new(iopad_reg);
+
     info!("MCI reg mapped at {:p}", mci_reg);
 
-    let sdcard = SdCardDriver::new(mci_reg);
+    let sdcard = SdCardDriver::new(mci_reg, iopad);
     let dev = rdif_block::Block::new(sdcard);
     plat_dev.register(dev);
 
@@ -96,8 +100,8 @@ pub struct SdCardDriver {
 }
 
 impl SdCardDriver {
-    pub fn new(sd_addr: NonNull<u8>) -> Self {
-        let sd_card = Arc::new(Mutex::new(Box::new(SdCard::new(sd_addr))));
+    pub fn new(sd_addr: NonNull<u8>, iopad: IoPad) -> Self {
+        let sd_card = Arc::new(Mutex::new(Box::new(SdCard::new(sd_addr, iopad))));
         SdCardDriver { sd_card }
     }
 }
