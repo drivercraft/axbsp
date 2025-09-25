@@ -9,8 +9,13 @@ rdrive = { workspace = true }
 rdif-block = { workspace = true }
 spin = { workspace = true }
 phytium-mci = { git = "https://github.com/YanQD/phytium-mci.git", rev = "d4657ae", default-features = false, features = ["pio", "poll"] }
-axplat-aarch64-dyn = { workspace = true, features = ["irq", "smp"] }
+axplat-aarch64-dyn = { workspace = true }
 axklib = { workspace = true }
+
+[features]
+smp = ["axplat-aarch64-dyn/smp"]
+irq = ["axplat-aarch64-dyn/irq"]
+hv = ["axplat-aarch64-dyn/hv"]
 
 [build-dependencies]
 serde = {version = "1.0", features = ["derive"]}
