@@ -2,8 +2,8 @@
 resolver = "2"
 
 members = [
-    "bsp-phytium",
-    "bsp-rockship",
+    "axbsp-phytium-pi",
+    "axbsp-roc-rk3568-pc",
 ]
 
 [workspace.package]
@@ -20,3 +20,5 @@ rdrive = "0.18"
 rdif-block = "0.6.2"
 rdif-clk = "0.4"
 spin = "0.10"
+axplat-aarch64-dyn = {git = "https://github.com/arceos-hypervisor/axplat-aarch64-dyn", features = ["irq", "smp"]}
+axklib = { git = "https://github.com/arceos-hypervisor/arceos", branch = "hypervisor"}

@@ -1,5 +1,5 @@
 [package]
-name = "bsp-rockship"
+name = "axbsp-roc-rk3568-pc"
 version = "0.1.0"
 edition = "2024"
 
@@ -11,3 +11,9 @@ rdif-clk = { workspace = true }
 spin = { workspace = true }
 rk3568_clk = { git = "https://github.com/drivercraft/rk3568-clk.git" }
 sdmmc = { git = "https://github.com/drivercraft/sdmmc.git", default-features = false, features = ["pio"] }
+axplat-aarch64-dyn = { workspace = true, features = ["irq", "smp"] }
+axklib = { workspace = true }
+
+[build-dependencies]
+serde = {version = "1.0", features = ["derive"]}
+toml = "0.8"

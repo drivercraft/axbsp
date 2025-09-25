@@ -1,9 +1,13 @@
 extern crate alloc;
 
+use axklib::mem::iomap;
 use rdif_clk::{ClockId, Interface};
 use rdrive::{DriverGeneric, KError};
 use rk3568_clk::CRU;
 use rk3568_clk::cru_clksel_con28_bits::*;
+
+use rdrive::{PlatformDevice, probe::OnProbeError};
+use rdrive::{module_driver, register::FdtInfo};
 
 /// 频率常量
 const MHZ: u32 = 1_000_000;
@@ -74,4 +78,49 @@ impl Interface for ClkDriver {
         }
         Ok(())
     }
+}
+
+module_driver!(
+    name: "Rockchip Clock",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::CLK,
+    probe_kinds: &[
+        ProbeKind::Fdt {
+            compatibles: &["rockchip,rk3568-cru"],
+            on_probe: probe_cru
+        }
+    ],
+);
+
+fn probe_cru(info: FdtInfo<'_>, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+    info!("Probing Rockchip RK3568 Clock...");
+
+    let cru_reg = info
+        .node
+        .reg()
+        .and_then(|mut regs| regs.next())
+        .ok_or(OnProbeError::other(alloc::format!(
+            "[{}] has no reg",
+            info.node.name()
+        )))?;
+
+    info!(
+        "CRU reg: addr={:#x}, size={:#x}",
+        cru_reg.address as usize,
+        cru_reg.size.unwrap_or(0)
+    );
+
+    let cru_reg_base = iomap(
+        (cru_reg.address as usize).into(),
+        cru_reg.size.unwrap_or(0x10000),
+    )
+    .expect("Failed to iomap CRU");
+
+    let cru_address = cru_reg_base.as_ptr() as u64;
+
+    debug!("cru address: {:#x}", cru_address);
+
+    plat_dev.register(ClkDriver::new(cru_address));
+
+    Ok(())
 }
